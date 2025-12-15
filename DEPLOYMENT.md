@@ -29,38 +29,53 @@ gcloud services enable cloudbuild.googleapis.com run.googleapis.com containerreg
 ### 2. Build and Test Docker Image Locally
 
 ```bash
-# Build the Docker image
-docker build -t ace-the-interview .
+# Build the Docker image with API keys as build arguments
+docker build \
+  --build-arg GOOGLE_API_KEY="your_google_key" \
+  --build-arg OPENAI_API_KEY="your_openai_key" \
+  --build-arg ANTHROPIC_API_KEY="your_anthropic_key" \
+  -t ace-the-interview .
 
 # Test locally
-docker run -p 8080:8080 \
-  -e GOOGLE_API_KEY="your_google_key" \
-  -e OPENAI_API_KEY="your_openai_key" \
-  -e ANTHROPIC_API_KEY="your_anthropic_key" \
-  ace-the-interview
+docker run -p 8080:8080 ace-the-interview
 
 # Visit http://localhost:8080
 ```
 
-### 3. Deploy to Cloud Run (Manual)
+**Important:** API keys must be provided as build arguments because Vite bakes them into the JavaScript bundle at build time.
+
+### 3. Deploy to Cloud Run (Easy Way - Recommended)
+
+Use the provided deployment script:
 
 ```bash
-# Set your project ID
-export PROJECT_ID="ace-the-interview"
-
-# Build and submit to Google Container Registry
-gcloud builds submit --tag gcr.io/$PROJECT_ID/ace-the-interview
-
-# Deploy to Cloud Run
-gcloud run deploy ace-the-interview \
-  --image gcr.io/$PROJECT_ID/ace-the-interview \
-  --platform managed \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --set-env-vars GOOGLE_API_KEY="your_google_key",OPENAI_API_KEY="your_openai_key",ANTHROPIC_API_KEY="your_anthropic_key"
+# Make sure your .env.local file has your API keys
+chmod +x deploy-cloudrun.sh
+./deploy-cloudrun.sh
 ```
 
-### 4. Deploy with Cloud Build (Automated - Recommended)
+This script will:
+- Load API keys from `.env.local`
+- Build the Docker image with API keys as build arguments
+- Deploy to Google Cloud Run
+- Display your app URL
+
+### 4. Deploy to Cloud Run (Manual)
+
+```bash
+# Load your API keys from .env.local
+export $(cat .env.local | grep -v '^#' | xargs)
+
+# Set your project ID
+export PROJECT_ID=$(gcloud config get-value project)
+
+# Build with API keys and submit to Cloud Run
+gcloud builds submit \
+  --config cloudbuild.yaml \
+  --substitutions _GOOGLE_API_KEY="$GOOGLE_API_KEY",_OPENAI_API_KEY="$OPENAI_API_KEY",_ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+```
+
+### 5. Using Secret Manager (Most Secure)
 
 ```bash
 # Store secrets in Secret Manager
@@ -68,33 +83,48 @@ echo -n "your_google_key" | gcloud secrets create google-api-key --data-file=-
 echo -n "your_openai_key" | gcloud secrets create openai-api-key --data-file=-
 echo -n "your_anthropic_key" | gcloud secrets create anthropic-api-key --data-file=-
 
-# Deploy using Cloud Build
+# Get secrets and deploy
+GOOGLE_KEY=$(gcloud secrets versions access latest --secret=google-api-key)
+OPENAI_KEY=$(gcloud secrets versions access latest --secret=openai-api-key)
+ANTHROPIC_KEY=$(gcloud secrets versions access latest --secret=anthropic-api-key)
+
 gcloud builds submit \
   --config cloudbuild.yaml \
-  --substitutions _GOOGLE_API_KEY="your_google_key",_OPENAI_API_KEY="your_openai_key",_ANTHROPIC_API_KEY="your_anthropic_key"
+  --substitutions _GOOGLE_API_KEY="$GOOGLE_KEY",_OPENAI_API_KEY="$OPENAI_KEY",_ANTHROPIC_API_KEY="$ANTHROPIC_KEY"
 ```
 
 ## Environment Variables
 
-Set these as Cloud Run environment variables or Cloud Build substitutions:
+**Important:** API keys must be provided as **build arguments** because this is a Vite application that bakes environment variables into the JavaScript bundle at build time.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GOOGLE_API_KEY` | Optional | For Gemini models |
-| `OPENAI_API_KEY` | Optional | For GPT models + Whisper |
+| `OPENAI_API_KEY` | Optional | For GPT models + real-time speech |
 | `ANTHROPIC_API_KEY` | Optional | For Claude (requires proxy) |
 | `PORT` | Auto | Set by Cloud Run (usually 8080) |
 
-**Note:** At least one API key is required for the app to function.
+**Note:** 
+- At least one API key is required for the app to function
+- API keys are injected at **build time**, not runtime
+- The deployment script and cloudbuild.yaml handle this automatically
 
-## Update Environment Variables
+## Update API Keys
+
+To update API keys, you must **rebuild and redeploy** the application:
 
 ```bash
-# Update existing deployment with new env vars
-gcloud run services update ace-the-interview \
-  --region us-central1 \
-  --set-env-vars GOOGLE_API_KEY="new_key",OPENAI_API_KEY="new_key"
+# Update your .env.local file with new keys, then redeploy
+./deploy-cloudrun.sh
+
+# Or manually:
+export $(cat .env.local | grep -v '^#' | xargs)
+gcloud builds submit \
+  --config cloudbuild.yaml \
+  --substitutions _GOOGLE_API_KEY="$GOOGLE_API_KEY",_OPENAI_API_KEY="$OPENAI_API_KEY",_ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 ```
+
+**Note:** Simply updating Cloud Run environment variables won't work because the keys are baked into the build.
 
 ## View Logs
 

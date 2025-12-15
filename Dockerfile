@@ -12,7 +12,17 @@ RUN npm ci
 # Copy source code
 COPY . .
 
-# Build the application
+# Accept build arguments for API keys
+ARG GOOGLE_API_KEY
+ARG OPENAI_API_KEY
+ARG ANTHROPIC_API_KEY
+
+# Set environment variables for the build
+ENV GOOGLE_API_KEY=$GOOGLE_API_KEY
+ENV OPENAI_API_KEY=$OPENAI_API_KEY
+ENV ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
+
+# Build the application (Vite will inject these env vars)
 RUN npm run build
 
 # Production stage
