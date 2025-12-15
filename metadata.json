@@ -1,0 +1,7 @@
+{
+  "name": "Ace The Interview",
+  "description": "A mock interview platform powered by Gemini 2.5 Flash and Gemini 3 Pro. Practice technical or behavioral interviews with customizable personas.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
