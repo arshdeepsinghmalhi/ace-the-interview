@@ -22,17 +22,13 @@ FROM nginx:alpine
 # Copy built assets from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Copy nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-# Copy environment injection script
-COPY inject-env.sh /docker-entrypoint.d/40-inject-env.sh
-RUN chmod +x /docker-entrypoint.d/40-inject-env.sh
+# Copy custom entrypoint script
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # Expose port (Cloud Run uses PORT env variable, default to 8080)
-ENV PORT=8080
 EXPOSE 8080
 
-# The nginx image automatically runs scripts in /docker-entrypoint.d/ before starting nginx
-# Our inject-env.sh script will run automatically and inject the Cloud Run env vars
+# Use custom entrypoint to handle PORT env var and inject runtime environment variables
+ENTRYPOINT ["/docker-entrypoint.sh"]
 
