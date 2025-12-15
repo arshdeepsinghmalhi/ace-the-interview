@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Message, InterviewConfig } from '../types';
-import { sendMessageStream, startInterviewSession, transcribeAudio } from '../services/aiService';
+import { sendMessageStream, startInterviewSession } from '../services/aiService';
 import { Button } from './Button';
 import { ChatMessage } from './ChatMessage';
 import { FEEDBACK_MESSAGE } from '../constants';
@@ -21,23 +21,103 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
   const [isListening, setIsListening] = useState(false);
   const [isTtsEnabled, setIsTtsEnabled] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
+
+  // Timer State
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const startTimeRef = useRef<number>(Date.now());
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialized = useRef(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const recognitionRef = useRef<any>(null);
 
-  // Initialize Media Recorder for Whisper
+  // Initialize Timer
   useEffect(() => {
+    startTimeRef.current = Date.now();
+    timerIntervalRef.current = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000));
+    }, 1000);
+
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+      }
+    };
+  }, []);
+
+  // Format time as MM:SS
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Initialize Speech Recognition for real-time transcription
+  useEffect(() => {
+    // Check if browser supports Web Speech API
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true; // Keep recognizing
+      recognition.interimResults = true; // Get results as they come
+      recognition.lang = 'en-US';
+      
+      recognition.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + ' ';
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+        
+        if (finalTranscript) {
+          setInputText(prev => prev + finalTranscript);
+        }
+      };
+      
+      recognition.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+        if (event.error === 'no-speech') {
+          // Silently ignore no-speech errors
+          return;
+        }
+        if (event.error !== 'aborted') {
+          setIsListening(false);
+        }
+      };
+      
+      recognition.onend = () => {
+        // Only restart if we're still supposed to be listening
+        if (isListening && !isEnding) {
+          try {
+            recognition.start();
+          } catch (e) {
+            console.log('Recognition restart error:', e);
+          }
+        }
+      };
+      
+      recognitionRef.current = recognition;
+    }
+    
     return () => {
        // Cleanup on unmount
-       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-         mediaRecorderRef.current.stop();
+       if (recognitionRef.current) {
+         try {
+           recognitionRef.current.stop();
+         } catch (e) {
+           // Ignore errors on cleanup
+         }
        }
        window.speechSynthesis.cancel();
     };
-  }, []);
+  }, [isListening, isEnding]);
 
   // Initialize chat on mount
   useEffect(() => {
@@ -49,7 +129,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
         startInterviewSession(config);
         setIsProcessing(true);
         // Initial greeting trigger - phantom user message to start conversation naturally
-        const greetingPrompt = "Hello, I am ready for the interview.";
+        const greetingPrompt = "Hello, I am ready for the interview. [Time: 0:00]";
         
         const aiResponseId = (Date.now() + 1).toString();
         setMessages([
@@ -100,58 +180,29 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
       window.speechSynthesis.speak(utterance);
   };
 
-  const toggleListening = async () => {
+  const toggleListening = () => {
+     if (!recognitionRef.current) {
+       alert("Speech recognition is not supported in your browser. Please use Chrome, Edge, or Safari.");
+       return;
+     }
+     
      if (isListening) {
-         // Stop recording and transcribe with Whisper
-         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-           mediaRecorderRef.current.stop();
+         // Stop recognition
+         try {
+           recognitionRef.current.stop();
+           setIsListening(false);
+         } catch (error) {
+           console.error("Error stopping recognition:", error);
          }
-         setIsListening(false);
      } else {
-         // Start recording
+         // Start recognition
          try {
            window.speechSynthesis.cancel(); // Stop AI speaking if user starts talking
-           
-           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-           const mediaRecorder = new MediaRecorder(stream, {
-             mimeType: 'audio/webm'
-           });
-           
-           audioChunksRef.current = [];
-           
-           mediaRecorder.ondataavailable = (event) => {
-             if (event.data.size > 0) {
-               audioChunksRef.current.push(event.data);
-             }
-           };
-           
-           mediaRecorder.onstop = async () => {
-             setIsTranscribing(true);
-             try {
-               const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-               
-               // Transcribe using OpenAI Whisper
-               const transcription = await transcribeAudio(audioBlob);
-               
-               if (transcription) {
-                 setInputText(prev => prev + (prev ? ' ' : '') + transcription);
-               }
-             } catch (error) {
-               console.error("Transcription error:", error);
-               alert("Failed to transcribe audio. Please check your OpenAI API key.");
-             } finally {
-               setIsTranscribing(false);
-               // Stop all tracks
-               stream.getTracks().forEach(track => track.stop());
-             }
-           };
-           
-           mediaRecorder.start();
-           mediaRecorderRef.current = mediaRecorder;
+           recognitionRef.current.start();
            setIsListening(true);
          } catch (error) {
-           console.error("Error accessing microphone:", error);
-           alert("Could not access microphone. Please allow microphone permissions.");
+           console.error("Error starting recognition:", error);
+           alert("Could not start speech recognition. Please try again.");
          }
      }
   };
@@ -165,15 +216,22 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
     if (!inputText.trim() || isProcessing) return;
     
     // Stop listening if sending manually
-    if (isListening && mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
+    if (isListening && recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          console.log('Error stopping recognition:', e);
+        }
         setIsListening(false);
     }
+
+    // Add timing context to the message
+    const messageWithTime = `${inputText} [Time: ${formatTime(elapsedSeconds)}]`;
 
     const userMsg: Message = {
       id: Date.now().toString(),
       role: 'user',
-      text: inputText,
+      text: inputText, // Store original text without timing for display
       timestamp: Date.now()
     };
 
@@ -185,7 +243,8 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
     setMessages(prev => [...prev, { id: modelMsgId, role: 'model', text: '', timestamp: Date.now() }]);
 
     try {
-      const fullText = await sendMessageStream(inputText, (text) => {
+      // Send message with timing context to AI
+      const fullText = await sendMessageStream(messageWithTime, (text) => {
          setMessages(prev => {
             const newMsgs = [...prev];
             const lastIndex = newMsgs.findIndex(m => m.id === modelMsgId);
@@ -216,8 +275,19 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
   const handleEndSession = async () => {
     setIsEnding(true);
     window.speechSynthesis.cancel();
-    if (isListening && mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+    
+    // Stop timer
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+    }
+    
+    // Stop speech recognition if active
+    if (isListening && recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {
+        console.log('Error stopping recognition:', e);
+      }
       setIsListening(false);
     }
 
@@ -238,7 +308,17 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
            <p className="text-xs text-slate-400">Model: {config.model}</p>
         </div>
         
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+            {/* Timer Display */}
+            <div className="flex items-center gap-2 bg-slate-900/50 px-3 py-1.5 rounded-lg border border-slate-700">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-indigo-400">
+                <path fillRule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25zM12.75 6a.75.75 0 00-1.5 0v6c0 .414.336.75.75.75h4.5a.75.75 0 000-1.5h-3.75V6z" clipRule="evenodd" />
+              </svg>
+              <span className="text-sm font-mono font-semibold text-indigo-300">
+                {formatTime(elapsedSeconds)}
+              </span>
+            </div>
+
             <button 
                 onClick={() => setIsTtsEnabled(!isTtsEnabled)}
                 className={`p-2 rounded-full transition-colors ${isTtsEnabled ? 'bg-indigo-600/20 text-indigo-400' : 'bg-slate-700/50 text-slate-500'}`}
@@ -281,54 +361,54 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
-      <div className="p-4 bg-slate-800 border-t border-slate-700 shrink-0">
-        <div className="flex gap-2 relative items-end">
-          <textarea
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={isListening ? "🎤 Recording..." : isTranscribing ? "✨ Transcribing..." : "Type your answer or use microphone..."}
-            className={`flex-1 bg-slate-900 text-white rounded-xl px-4 py-3 border border-slate-700 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none resize-none h-[60px] scrollbar-hide transition-all ${isListening ? 'ring-2 ring-red-500 bg-red-950/20' : isTranscribing ? 'ring-2 ring-yellow-500 bg-yellow-950/20' : ''}`}
-            disabled={isProcessing || isEnding || isTranscribing}
-          />
-          
-          <button
-             onClick={toggleListening}
-             disabled={isProcessing || isEnding || isTranscribing}
-             className={`h-[60px] w-[60px] rounded-xl flex items-center justify-center transition-all ${
-                 isListening 
-                 ? 'bg-red-600 animate-pulse text-white shadow-lg shadow-red-500/20' 
-                 : isTranscribing
-                 ? 'bg-yellow-600 text-white'
-                 : 'bg-slate-700 hover:bg-slate-600 text-slate-300'
-             }`}
-             title={isListening ? "Stop Recording" : "Start Recording (Whisper)"}
-          >
-             {isListening ? (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
-                   <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
-                   <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-7.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
-                </svg>
-             ) : (
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
-                   <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
-                   <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-7.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
-                </svg>
-             )}
-          </button>
+      {/* Input Area - Hidden when interview is ending/concluded */}
+      {!isEnding && (
+        <div className="p-4 bg-slate-800 border-t border-slate-700 shrink-0">
+          <div className="flex gap-2 relative items-end">
+            <textarea
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={isListening ? "🎤 Listening..." : "Type your answer or use microphone..."}
+              className={`flex-1 bg-slate-900 text-white rounded-xl px-4 py-3 border border-slate-700 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none resize-none h-[60px] scrollbar-hide transition-all ${isListening ? 'ring-2 ring-red-500 bg-red-950/20' : ''}`}
+              disabled={isProcessing}
+            />
+            
+            <button
+               onClick={toggleListening}
+               disabled={isProcessing}
+               className={`h-[60px] w-[60px] rounded-xl flex items-center justify-center transition-all ${
+                   isListening 
+                   ? 'bg-red-600 animate-pulse text-white shadow-lg shadow-red-500/20' 
+                   : 'bg-slate-700 hover:bg-slate-600 text-slate-300'
+               }`}
+               title={isListening ? "Stop Listening" : "Start Voice Input"}
+            >
+               {isListening ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+                     <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
+                     <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-7.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
+                  </svg>
+               ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+                     <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
+                     <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-7.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
+                  </svg>
+               )}
+            </button>
 
-          <Button 
-            onClick={handleSend} 
-            disabled={!inputText.trim() || isProcessing || isEnding || isTranscribing}
-            className="h-[60px] w-[60px] rounded-xl flex items-center justify-center p-0"
-          >
-             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 transform -rotate-45 relative left-1">
-                <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
-             </svg>
-          </Button>
+            <Button 
+              onClick={handleSend} 
+              disabled={!inputText.trim() || isProcessing}
+              className="h-[60px] w-[60px] rounded-xl flex items-center justify-center p-0"
+            >
+               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6 transform -rotate-45 relative left-1">
+                  <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+               </svg>
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
