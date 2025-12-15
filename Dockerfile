@@ -12,17 +12,8 @@ RUN npm ci
 # Copy source code
 COPY . .
 
-# Accept build arguments for API keys
-ARG GOOGLE_API_KEY
-ARG OPENAI_API_KEY
-ARG ANTHROPIC_API_KEY
-
-# Set environment variables for the build
-ENV GOOGLE_API_KEY=$GOOGLE_API_KEY
-ENV OPENAI_API_KEY=$OPENAI_API_KEY
-ENV ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-
-# Build the application (Vite will inject these env vars)
+# Build the application WITHOUT embedding API keys
+# API keys will be injected at runtime from Cloud Run environment variables
 RUN npm run build
 
 # Production stage
@@ -34,10 +25,14 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# Copy environment injection script
+COPY inject-env.sh /docker-entrypoint.d/40-inject-env.sh
+RUN chmod +x /docker-entrypoint.d/40-inject-env.sh
+
 # Expose port (Cloud Run uses PORT env variable, default to 8080)
 ENV PORT=8080
 EXPOSE 8080
 
-# Start nginx
-CMD sed -i -e 's/$PORT/'"$PORT"'/g' /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'
+# The nginx image automatically runs scripts in /docker-entrypoint.d/ before starting nginx
+# Our inject-env.sh script will run automatically and inject the Cloud Run env vars
 

@@ -1,23 +1,19 @@
 steps:
-  # Build the container image with API keys as build args
+  # Build the container image (NO API keys at build time!)
   - name: 'gcr.io/cloud-builders/docker'
     args: 
       - 'build'
       - '-t'
       - 'gcr.io/$PROJECT_ID/ace-the-interview:$COMMIT_SHA'
-      - '--build-arg'
-      - 'GOOGLE_API_KEY=${_GOOGLE_API_KEY}'
-      - '--build-arg'
-      - 'OPENAI_API_KEY=${_OPENAI_API_KEY}'
-      - '--build-arg'
-      - 'ANTHROPIC_API_KEY=${_ANTHROPIC_API_KEY}'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/ace-the-interview:latest'
       - '.'
   
   # Push the container image to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/ace-the-interview:$COMMIT_SHA']
+    args: ['push', '--all-tags', 'gcr.io/$PROJECT_ID/ace-the-interview']
   
-  # Deploy container image to Cloud Run
+  # Deploy container image to Cloud Run with runtime environment variables
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -39,14 +35,20 @@ steps:
       - '0'
       - '--max-instances'
       - '10'
+      # Set runtime environment variables from Secret Manager or substitutions
+      # These can be updated in Cloud Run UI without rebuilding!
+      - '--set-env-vars'
+      - 'GOOGLE_API_KEY=${_GOOGLE_API_KEY},OPENAI_API_KEY=${_OPENAI_API_KEY},ANTHROPIC_API_KEY=${_ANTHROPIC_API_KEY}'
 
 images:
   - 'gcr.io/$PROJECT_ID/ace-the-interview:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/ace-the-interview:latest'
 
 options:
   machineType: 'N1_HIGHCPU_8'
 
-# Set substitution variables in Cloud Build trigger
+# Optional: Set substitution variables in Cloud Build trigger
+# Better approach: Set these in Cloud Run UI instead!
 substitutions:
   _GOOGLE_API_KEY: ''
   _OPENAI_API_KEY: ''

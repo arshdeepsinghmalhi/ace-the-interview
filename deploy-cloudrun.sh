@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Deploy to Google Cloud Run with API keys
+# Deploy to Google Cloud Run with runtime environment variable injection
+# API keys are injected at RUNTIME (not build time) via inject-env.sh
 # Usage: ./deploy-cloudrun.sh
 
 set -e

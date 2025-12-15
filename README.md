@@ -50,17 +50,38 @@ View your app in AI Studio: https://ai.studio/apps/drive/1OPcAxiMlINVtt19oc5TTRn
 
 ## Deploy to Google Cloud Run
 
-For production deployment to Google Cloud Run, see **[DEPLOYMENT.md](./DEPLOYMENT.md)** for detailed instructions.
+**New:** Now with runtime environment variable injection! Update API keys without rebuilding. 🎉
 
-Quick deploy:
+For detailed deployment instructions, see:
+- **[CLOUD_RUN_SETUP.md](./CLOUD_RUN_SETUP.md)** - Quick setup guide with troubleshooting
+- **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Complete deployment documentation
+
+### Quick Deploy (GitHub Integration - Recommended)
+
+1. Push your code to GitHub
+2. Go to [Cloud Run Console](https://console.cloud.google.com/run)
+3. Click "Create Service" → "Continuously deploy from repository"
+4. Connect your GitHub repo
+5. **Add environment variables** in the Cloud Run UI:
+   - `GOOGLE_API_KEY`
+   - `OPENAI_API_KEY`
+   - `ANTHROPIC_API_KEY`
+6. Deploy!
+
+**Benefits:**
+- ✅ Update API keys anytime in Cloud Run UI (no rebuild needed!)
+- ✅ API keys are never baked into Docker image (more secure)
+- ✅ Automatic deployments on git push
+
+### Command Line Deploy
+
 ```bash
-# Build and deploy
-gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/ace-the-interview
 gcloud run deploy ace-the-interview \
-  --image gcr.io/YOUR_PROJECT_ID/ace-the-interview \
+  --source . \
   --platform managed \
   --region us-central1 \
-  --allow-unauthenticated
+  --allow-unauthenticated \
+  --set-env-vars GOOGLE_API_KEY="your_key",OPENAI_API_KEY="your_key",ANTHROPIC_API_KEY="your_key"
 ```
 
 ## Customization

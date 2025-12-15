@@ -20,36 +20,60 @@ let openaiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 let anthropicMessages: Anthropic.MessageParam[] = [];
 
 /**
+ * Get API keys from environment
+ * Supports both build-time (process.env) and runtime (window.__ENV__) injection
+ */
+const getApiKey = (key: string): string | undefined => {
+  // First try runtime injection from Cloud Run (window.__ENV__)
+  if (typeof window !== 'undefined' && (window as any).__ENV__) {
+    return (window as any).__ENV__[key];
+  }
+  // Fall back to build-time injection (Vite's process.env)
+  return (process.env as any)[key];
+};
+
+/**
  * Initialize AI clients based on available API keys
  */
 const initializeClients = () => {
+  const googleKey = getApiKey('GOOGLE_API_KEY');
+  const openaiKey = getApiKey('OPENAI_API_KEY');
+  const anthropicKey = getApiKey('ANTHROPIC_API_KEY');
+
   // Debug: Log API key availability (first 10 chars only for security)
   console.log('🔑 API Keys Status:', {
-    google: process.env.GOOGLE_API_KEY ? `${process.env.GOOGLE_API_KEY.substring(0, 10)}...` : '❌ Not set',
-    openai: process.env.OPENAI_API_KEY ? `${process.env.OPENAI_API_KEY.substring(0, 10)}...` : '❌ Not set',
-    anthropic: process.env.ANTHROPIC_API_KEY ? `${process.env.ANTHROPIC_API_KEY.substring(0, 10)}...` : '❌ Not set'
+    google: googleKey ? `${googleKey.substring(0, 10)}...` : '❌ Not set',
+    openai: openaiKey ? `${openaiKey.substring(0, 10)}...` : '❌ Not set',
+    anthropic: anthropicKey ? `${anthropicKey.substring(0, 10)}...` : '❌ Not set'
   });
+  
+  // Log where keys are coming from
+  if (typeof window !== 'undefined' && (window as any).__ENV__) {
+    console.log('📦 Using runtime environment variables from Cloud Run');
+  } else {
+    console.log('📦 Using build-time environment variables');
+  }
 
   // Google AI
-  if (process.env.GOOGLE_API_KEY && !googleAI) {
-    googleAI = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+  if (googleKey && !googleAI) {
+    googleAI = new GoogleGenAI({ apiKey: googleKey });
     console.log('✅ Google AI client initialized');
   }
   
   // OpenAI
-  if (process.env.OPENAI_API_KEY && !openaiClient) {
+  if (openaiKey && !openaiClient) {
     openaiClient = new OpenAI({ 
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey: openaiKey,
       dangerouslyAllowBrowser: true // For client-side usage
     });
     console.log('✅ OpenAI client initialized');
   }
   
   // Anthropic
-  if (process.env.ANTHROPIC_API_KEY && !anthropicClient) {
+  if (anthropicKey && !anthropicClient) {
     try {
       anthropicClient = new Anthropic({ 
-        apiKey: process.env.ANTHROPIC_API_KEY,
+        apiKey: anthropicKey,
         dangerouslyAllowBrowser: true // For client-side usage
       });
       console.log('✅ Anthropic client initialized');

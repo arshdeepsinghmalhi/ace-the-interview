@@ -8,6 +8,21 @@ This guide will help you deploy the Ace The Interview app to Google Cloud Run.
 2. **gcloud CLI** installed ([Install Guide](https://cloud.google.com/sdk/docs/install))
 3. **Docker** installed locally (for testing)
 
+## How It Works
+
+This app uses **runtime environment variable injection** for Cloud Run deployment:
+
+1. **Build Time:** The app is built without any API keys embedded
+2. **Container Startup:** When the container starts, `inject-env.sh` script runs automatically
+3. **Runtime Injection:** The script reads Cloud Run environment variables and creates `/usr/share/nginx/html/env-config.js`
+4. **Browser Access:** The React app reads API keys from `window.__ENV__` instead of `process.env`
+
+**Benefits:**
+- ✅ Update API keys without rebuilding
+- ✅ No API keys exposed in Docker image
+- ✅ Same image works across environments
+- ✅ Works with Cloud Run's environment variables UI
+
 ## Quick Start
 
 ### 1. Set up Google Cloud Project
@@ -29,50 +44,50 @@ gcloud services enable cloudbuild.googleapis.com run.googleapis.com containerreg
 ### 2. Build and Test Docker Image Locally
 
 ```bash
-# Build the Docker image with API keys as build arguments
-docker build \
-  --build-arg GOOGLE_API_KEY="your_google_key" \
-  --build-arg OPENAI_API_KEY="your_openai_key" \
-  --build-arg ANTHROPIC_API_KEY="your_anthropic_key" \
-  -t ace-the-interview .
+# Build the Docker image (no API keys needed at build time!)
+docker build -t ace-the-interview .
 
-# Test locally
-docker run -p 8080:8080 ace-the-interview
+# Test locally with runtime environment variables
+docker run -p 8080:8080 \
+  -e GOOGLE_API_KEY="your_google_key" \
+  -e OPENAI_API_KEY="your_openai_key" \
+  -e ANTHROPIC_API_KEY="your_anthropic_key" \
+  ace-the-interview
 
 # Visit http://localhost:8080
 ```
 
-**Important:** API keys must be provided as build arguments because Vite bakes them into the JavaScript bundle at build time.
+**Important:** API keys are now injected at **runtime**, not build time. This means you can update them in Cloud Run without rebuilding!
 
-### 3. Deploy to Cloud Run (Easy Way - Recommended)
+### 3. Deploy to Cloud Run via GitHub (Recommended)
 
-Use the provided deployment script:
+The easiest way is to connect your GitHub repository directly to Cloud Run:
+
+1. Go to [Google Cloud Run Console](https://console.cloud.google.com/run)
+2. Click "Create Service" → "Continuously deploy from a repository"
+3. Connect your GitHub account and select your repository
+4. Select the branch (e.g., `main`)
+5. **Set environment variables** in the Cloud Run UI:
+   - `GOOGLE_API_KEY`: Your Gemini API key
+   - `OPENAI_API_KEY`: Your OpenAI API key
+   - `ANTHROPIC_API_KEY`: Your Claude API key
+6. Click "Deploy"
+
+**Advantage:** You can update API keys anytime in the Cloud Run UI without rebuilding!
+
+### 4. Deploy to Cloud Run (Command Line)
 
 ```bash
-# Make sure your .env.local file has your API keys
-chmod +x deploy-cloudrun.sh
-./deploy-cloudrun.sh
-```
-
-This script will:
-- Load API keys from `.env.local`
-- Build the Docker image with API keys as build arguments
-- Deploy to Google Cloud Run
-- Display your app URL
-
-### 4. Deploy to Cloud Run (Manual)
-
-```bash
-# Load your API keys from .env.local
-export $(cat .env.local | grep -v '^#' | xargs)
-
 # Set your project ID
 export PROJECT_ID=$(gcloud config get-value project)
 
-# Build with API keys and submit to Cloud Run
-gcloud builds submit \
-  --config cloudbuild.yaml \
-  --substitutions _GOOGLE_API_KEY="$GOOGLE_API_KEY",_OPENAI_API_KEY="$OPENAI_API_KEY",_ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+# Build and deploy (no API keys in build command!)
+gcloud run deploy ace-the-interview \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars GOOGLE_API_KEY="your_google_key",OPENAI_API_KEY="your_openai_key",ANTHROPIC_API_KEY="your_anthropic_key"
 ```
 
 ### 5. Using Secret Manager (Most Secure)
@@ -95,7 +110,7 @@ gcloud builds submit \
 
 ## Environment Variables
 
-**Important:** API keys must be provided as **build arguments** because this is a Vite application that bakes environment variables into the JavaScript bundle at build time.
+**New in this version:** API keys are now injected at **runtime**, not build time! This means you can update them anytime in the Cloud Run UI without rebuilding your app.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -106,25 +121,28 @@ gcloud builds submit \
 
 **Note:** 
 - At least one API key is required for the app to function
-- API keys are injected at **build time**, not runtime
-- The deployment script and cloudbuild.yaml handle this automatically
+- API keys are injected at **runtime** via a startup script (`inject-env.sh`)
+- The startup script reads Cloud Run environment variables and injects them into `window.__ENV__`
 
 ## Update API Keys
 
-To update API keys, you must **rebuild and redeploy** the application:
+To update API keys, simply update them in the Cloud Run UI (no rebuild needed!):
 
+### Via Cloud Run Console:
+1. Go to your service in [Cloud Run Console](https://console.cloud.google.com/run)
+2. Click "Edit & Deploy New Revision"
+3. Go to "Variables & Secrets" tab
+4. Update the environment variables
+5. Click "Deploy"
+
+### Via Command Line:
 ```bash
-# Update your .env.local file with new keys, then redeploy
-./deploy-cloudrun.sh
-
-# Or manually:
-export $(cat .env.local | grep -v '^#' | xargs)
-gcloud builds submit \
-  --config cloudbuild.yaml \
-  --substitutions _GOOGLE_API_KEY="$GOOGLE_API_KEY",_OPENAI_API_KEY="$OPENAI_API_KEY",_ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+gcloud run services update ace-the-interview \
+  --region us-central1 \
+  --set-env-vars GOOGLE_API_KEY="new_key",OPENAI_API_KEY="new_key",ANTHROPIC_API_KEY="new_key"
 ```
 
-**Note:** Simply updating Cloud Run environment variables won't work because the keys are baked into the build.
+**Advantage:** Instant updates without rebuilding the Docker image!
 
 ## View Logs
 
@@ -198,9 +216,27 @@ gcloud run services logs read ace-the-interview --region us-central1
 ```
 
 ### API Keys Not Working
-- Ensure environment variables are set correctly
-- Check Secret Manager permissions
-- Verify API keys are valid and have sufficient quota
+1. **Check if env vars are set in Cloud Run:**
+   ```bash
+   gcloud run services describe ace-the-interview --region us-central1 --format="yaml(spec.template.spec.containers[0].env)"
+   ```
+
+2. **Check browser console** for `window.__ENV__`:
+   - Open DevTools Console
+   - Type: `console.log(window.__ENV__)`
+   - You should see your API keys (first 10 chars visible)
+
+3. **Check container logs** for injection script output:
+   ```bash
+   gcloud run services logs read ace-the-interview --region us-central1 --limit 50
+   ```
+   Look for: "🔧 Injecting runtime environment variables..."
+
+4. **Common issues:**
+   - Environment variables not set in Cloud Run UI
+   - Typo in environment variable names (must match exactly)
+   - API keys are invalid or have insufficient quota
+   - Browser cache (hard refresh: Cmd+Shift+R or Ctrl+Shift+R)
 
 ## Useful Commands
 
