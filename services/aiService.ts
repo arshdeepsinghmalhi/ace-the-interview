@@ -23,9 +23,17 @@ let anthropicMessages: Anthropic.MessageParam[] = [];
  * Initialize AI clients based on available API keys
  */
 const initializeClients = () => {
+  // Debug: Log API key availability (first 10 chars only for security)
+  console.log('🔑 API Keys Status:', {
+    google: process.env.GOOGLE_API_KEY ? `${process.env.GOOGLE_API_KEY.substring(0, 10)}...` : '❌ Not set',
+    openai: process.env.OPENAI_API_KEY ? `${process.env.OPENAI_API_KEY.substring(0, 10)}...` : '❌ Not set',
+    anthropic: process.env.ANTHROPIC_API_KEY ? `${process.env.ANTHROPIC_API_KEY.substring(0, 10)}...` : '❌ Not set'
+  });
+
   // Google AI
   if (process.env.GOOGLE_API_KEY && !googleAI) {
     googleAI = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY });
+    console.log('✅ Google AI client initialized');
   }
   
   // OpenAI
@@ -34,6 +42,7 @@ const initializeClients = () => {
       apiKey: process.env.OPENAI_API_KEY,
       dangerouslyAllowBrowser: true // For client-side usage
     });
+    console.log('✅ OpenAI client initialized');
   }
   
   // Anthropic
@@ -43,6 +52,7 @@ const initializeClients = () => {
         apiKey: process.env.ANTHROPIC_API_KEY,
         dangerouslyAllowBrowser: true // For client-side usage
       });
+      console.log('✅ Anthropic client initialized');
     } catch (error) {
       console.error("Anthropic client initialization failed:", error);
       console.warn("Note: Anthropic API may not work directly in browsers due to CORS. Consider using a backend proxy.");
