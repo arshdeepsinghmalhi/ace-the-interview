@@ -21,6 +21,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
   const [isListening, setIsListening] = useState(false);
   const [isTtsEnabled, setIsTtsEnabled] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [micPermission, setMicPermission] = useState<'prompt' | 'granted' | 'denied'>('prompt');
 
   // Timer State
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -30,6 +31,9 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialized = useRef(false);
   const recognitionRef = useRef<any>(null);
+  const recognitionActiveRef = useRef(false);
+  const recognitionRestartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastErrorWasAbortedRef = useRef(false);
 
   // Initialize Timer
   useEffect(() => {
@@ -52,16 +56,40 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Check microphone permissions on mount
+  useEffect(() => {
+    const checkMicPermissions = async () => {
+      try {
+        if ('permissions' in navigator) {
+          const result = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+          setMicPermission(result.state as 'prompt' | 'granted' | 'denied');
+          result.onchange = () => {
+            setMicPermission(result.state as 'prompt' | 'granted' | 'denied');
+          };
+        }
+      } catch (error) {
+        console.log('Could not check microphone permissions:', error);
+      }
+    };
+    checkMicPermissions();
+  }, []);
+
   // Initialize Speech Recognition for real-time transcription
   useEffect(() => {
     // Check if browser supports Web Speech API
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     
-    if (SpeechRecognition) {
+    if (SpeechRecognition && !recognitionRef.current) {
       const recognition = new SpeechRecognition();
       recognition.continuous = true; // Keep recognizing
       recognition.interimResults = true; // Get results as they come
       recognition.lang = 'en-US';
+      
+      recognition.onstart = () => {
+        console.log('Speech recognition started');
+        setMicPermission('granted');
+        recognitionActiveRef.current = true;
+      };
       
       recognition.onresult = (event: any) => {
         let interimTranscript = '';
@@ -87,20 +115,36 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
           // Silently ignore no-speech errors
           return;
         }
+        if (event.error === 'aborted') {
+          lastErrorWasAbortedRef.current = true;
+          recognitionActiveRef.current = false;
+          setIsListening(false);
+          return;
+        }
+        if (event.error === 'not-allowed') {
+          setMicPermission('denied');
+          alert('Microphone access denied. Please allow microphone access in your browser settings and refresh the page.');
+          setIsListening(false);
+          return;
+        }
+        if (event.error === 'audio-capture') {
+          alert('Could not capture audio from microphone. Please check that your microphone is connected and not being used by another application.');
+          setIsListening(false);
+          return;
+        }
         if (event.error !== 'aborted') {
           setIsListening(false);
         }
       };
       
       recognition.onend = () => {
-        // Only restart if we're still supposed to be listening
-        if (isListening && !isEnding) {
-          try {
-            recognition.start();
-          } catch (e) {
-            console.log('Recognition restart error:', e);
-          }
+        // Auto-restart handled by effect based on isListening state
+        recognitionActiveRef.current = false;
+        if (lastErrorWasAbortedRef.current) {
+          // don't spam restarts after manual stop/abort
+          return;
         }
+        console.log('Recognition ended');
       };
       
       recognitionRef.current = recognition;
@@ -116,7 +160,72 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
          }
        }
        window.speechSynthesis.cancel();
+       if (recognitionRestartTimeoutRef.current) {
+         clearTimeout(recognitionRestartTimeoutRef.current);
+       }
     };
+  }, []); // Only run once on mount
+
+  const startRecognitionSafely = () => {
+    if (!recognitionRef.current) return;
+    // Avoid double start loops
+    if (recognitionActiveRef.current) return;
+    try {
+      recognitionRef.current.start();
+    } catch (error: any) {
+      if (error?.message?.includes('already started')) {
+        recognitionActiveRef.current = true;
+        return;
+      }
+      console.error('Error starting recognition:', error);
+      setIsListening(false);
+    }
+  };
+
+  // Handle auto-restart of recognition when listening state changes
+  useEffect(() => {
+    if (isListening && recognitionRef.current && !isEnding) {
+      // Clear any pending restart
+      if (recognitionRestartTimeoutRef.current) {
+        clearTimeout(recognitionRestartTimeoutRef.current);
+      }
+
+      // Ensure recognition is running
+      startRecognitionSafely();
+
+      // Set up onend to auto-restart while listening (debounced)
+      recognitionRef.current.onend = () => {
+        recognitionActiveRef.current = false;
+        if (lastErrorWasAbortedRef.current) {
+          // reset flag and do not restart on abort
+          lastErrorWasAbortedRef.current = false;
+          return;
+        }
+        console.log('Recognition ended, restarting...');
+        if (!isListening || isEnding || !recognitionRef.current) return;
+        if (recognitionRestartTimeoutRef.current) {
+          clearTimeout(recognitionRestartTimeoutRef.current);
+        }
+        recognitionRestartTimeoutRef.current = setTimeout(() => {
+          if (!isListening || isEnding || !recognitionRef.current) return;
+          startRecognitionSafely();
+        }, 300);
+      };
+    } else if (!isListening && recognitionRef.current) {
+      // remove auto-restart handler
+      recognitionRef.current.onend = () => {
+        recognitionActiveRef.current = false;
+      };
+      if (recognitionRestartTimeoutRef.current) {
+        clearTimeout(recognitionRestartTimeoutRef.current);
+      }
+      // Make sure recognition is stopped
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {
+        // Ignore errors when stopping
+      }
+    }
   }, [isListening, isEnding]);
 
   // Initialize chat on mount
@@ -193,16 +302,17 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
            setIsListening(false);
          } catch (error) {
            console.error("Error stopping recognition:", error);
+           setIsListening(false);
          }
      } else {
          // Start recognition
          try {
            window.speechSynthesis.cancel(); // Stop AI speaking if user starts talking
-           recognitionRef.current.start();
-           setIsListening(true);
+           setIsListening(true); // actual start handled by effect to avoid double-start errors
          } catch (error) {
            console.error("Error starting recognition:", error);
-           alert("Could not start speech recognition. Please try again.");
+           alert("Could not start speech recognition. Please check microphone permissions and try again.");
+           setIsListening(false);
          }
      }
   };
@@ -376,15 +486,29 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
             
             <button
                onClick={toggleListening}
-               disabled={isProcessing}
-               className={`h-[60px] w-[60px] rounded-xl flex items-center justify-center transition-all ${
+               disabled={isProcessing || micPermission === 'denied'}
+               className={`h-[60px] w-[60px] rounded-xl flex items-center justify-center transition-all relative ${
                    isListening 
                    ? 'bg-red-600 animate-pulse text-white shadow-lg shadow-red-500/20' 
+                   : micPermission === 'denied'
+                   ? 'bg-slate-800 text-slate-600 cursor-not-allowed'
                    : 'bg-slate-700 hover:bg-slate-600 text-slate-300'
                }`}
-               title={isListening ? "Stop Listening" : "Start Voice Input"}
+               title={
+                  micPermission === 'denied' 
+                  ? "Microphone access denied. Please allow access in browser settings." 
+                  : isListening 
+                  ? "Stop Listening (Click to stop recording)" 
+                  : "Start Voice Input (Click to speak your answer)"
+               }
             >
-               {isListening ? (
+               {micPermission === 'denied' ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+                     <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
+                     <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-7.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
+                     <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2 2l20 20" />
+                  </svg>
+               ) : isListening ? (
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
                      <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
                      <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-7.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
@@ -394,6 +518,12 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({ config, onEn
                      <path d="M8.25 4.5a3.75 3.75 0 117.5 0v8.25a3.75 3.75 0 11-7.5 0V4.5z" />
                      <path d="M6 10.5a.75.75 0 01.75.75v1.5a5.25 5.25 0 1010.5 0v-1.5a.75.75 0 011.5 0v1.5a6.751 6.751 0 01-6 6.709v2.291h3a.75.75 0 010 1.5h-7.5a.75.75 0 010-1.5h3v-2.291a6.751 6.751 0 01-6-6.709v-1.5A.75.75 0 016 10.5z" />
                   </svg>
+               )}
+               {isListening && (
+                  <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                  </span>
                )}
             </button>
 
